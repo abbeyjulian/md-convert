@@ -94,7 +94,7 @@ for page in pdf.pages:
         if not matched:
             md_text += " "
             md_text += t
-    # handle tables
+    # handle table(s)
     table = page.extract_tables(table_settings={})
     unformatted_table = ""
     formatted_table = ""
