@@ -3,15 +3,25 @@ import re
 import tkinter as tk
 from tkinter import filedialog
 import logging
+from operator import itemgetter
 
-print("PDF Outline to Markdown Conversion")
-print("updated May 2024 by abbeyjulian")
+print("PDF Outline to Markdown Conversion Version 2.02")
+print("updated June 1 2024 by abbeyjulian")
 print("---------------------------------")
 
 
 class Filenames:
     def __init__(self):
         self.filenames = []
+
+
+def check_bboxes(word, table_bbox):
+    """
+    Check whether word is inside a table bbox.
+    """
+    l = word['x0'], word['top'], word['x1'], word['bottom']
+    r = table_bbox
+    return l[0] > r[0] and l[1] > r[1] and l[2] < r[2] and l[3] < r[3]
 
 
 # for error reporting
@@ -21,8 +31,8 @@ logger = logging.getLogger(__name__)
 
 window = tk.Tk()
 window.title("Markdown Conversion App")
-header1 = tk.Label(text="PDF Outline to Markdown Conversion")
-header2 = tk.Label(text="updated May 2024 by abbeyjulian")
+header1 = tk.Label(text="PDF Outline to Markdown Conversion Version 2.02")
+header2 = tk.Label(text="updated June 1 2024 by abbeyjulian")
 header3 = tk.Label(text="---------------------------------")
 header1.pack()
 header2.pack()
@@ -103,68 +113,77 @@ def handle_click(event):
             current_level = 0
             md_text = ""
             for page in pdf.pages:
-                # get text and remove header/footer from page text
-                text = page.extract_text()
-                text = text.split("\n")[header_length:-footer_length]
-                for t in text:
-                    matched = False
-                    # same level
-                    if re.match(styles[current_level], t):
-                        md_text += "\n"
-                        if current_level < number_headings:
-                            md_text += ("#"*(current_level+1))
+                tables = page.find_tables()
+                table_bboxes = [i.bbox for i in tables]
+                tables = [{'table': i.extract(), 'top': i.bbox[1]} for i in tables]
+                non_table_words = [word for word in page.extract_words() if
+                                   not any([check_bboxes(word, table_bbox) for table_bbox in table_bboxes])]
+                iter_list = pdfplumber.utils.cluster_objects(non_table_words + tables, itemgetter('top'), tolerance=5)
+                iter_list = iter_list[header_length:-footer_length]
+                for cluster in iter_list:
+                    if 'text' in cluster[0]:
+                        t = ' '.join([i['text'] for i in cluster])
+                        matched = False
+                        # same level
+                        if re.match(styles[current_level], t):
+                            md_text += "\n"
+                            if current_level < number_headings:
+                                md_text += ("#" * (current_level + 1))
+                                md_text += " "
+                            elif current_level >= number_headings + 1:
+                                md_text += ("\t" * (current_level - number_headings))
+                            else:
+                                md_text += ("\n" + "\t" * (current_level - number_headings))
+                            md_text += t
+                            matched = True
+                        # up level(s)
+                        elif current_level - 1 >= 0:
+                            cl = current_level
+                            while cl - 1 >= 0:
+                                if re.match(styles[cl - 1], t):
+                                    md_text += "\n"
+                                    current_level = cl - 1
+                                    if current_level < number_headings:
+                                        md_text += ("#" * (current_level + 1))
+                                        md_text += " "
+                                    elif current_level >= number_headings + 1:
+                                        md_text += ("\t" * (current_level - number_headings))
+                                    else:
+                                        md_text += ("\n" + "\t" * (current_level - number_headings))
+                                    md_text += t
+                                    matched = True
+                                    break
+                                cl -= 1
+                        # down a level
+                        if not matched and current_level + 1 < number_levels and re.match(styles[current_level + 1], t):
+                            md_text += "\n"
+                            current_level += 1
+                            if current_level < number_headings:
+                                md_text += ("#" * (current_level + 1))
+                                md_text += " "
+                            elif current_level >= number_headings + 1:
+                                md_text += ("\t" * (current_level - number_headings))
+                            else:
+                                md_text += ("\n" + "\t" * (current_level - number_headings))
+                            md_text += t
+                            matched = True
+                        # continuation of paragraph
+                        if not matched:
                             md_text += " "
-                        else:
-                            md_text += ("\n"+"\t"*(current_level-number_headings))
-                        md_text += t
-                        matched = True
-                    # up level(s)
-                    elif current_level-1 >= 0:
-                        cl = current_level
-                        while cl-1 >= 0:
-                            if re.match(styles[cl-1], t):
-                                md_text += "\n"
-                                current_level = cl-1
-                                if current_level < number_headings:
-                                    md_text += ("#" * (current_level + 1))
-                                    md_text += " "
-                                else:
-                                    md_text += ("\n" + "\t" * (current_level - number_headings))
-                                md_text += t
-                                matched = True
-                                break
-                            cl -= 1
-                    # down a level
-                    if not matched and current_level+1 < number_levels and re.match(styles[current_level+1], t):
-                        md_text += "\n"
-                        current_level += 1
-                        if current_level < number_headings:
-                            md_text += ("#" * (current_level + 1))
-                            md_text += " "
-                        else:
-                            md_text += ("\n"+"\t"*(current_level-number_headings))
-                        md_text += t
-                        matched = True
-                    # continuation of paragraph
-                    if not matched:
-                        md_text += " "
-                        md_text += t
-                # handle table(s)
-                table = page.extract_tables(table_settings={})
-                for _table in table:
-                    unformatted_table = ""
-                    formatted_table = ""
-                    header = True
-                    for row in _table:
-                        row = ["" if r is None else r for r in row]
-                        unformatted_table += (" ".join(row) + " ")
-                        formatted_table += ("| " + " | ".join(row) + " |\n")
-                        if header:
-                            formatted_table += ("| " + ("---|")*len(row)+"\n")
-                            header = False
-                    unformatted_table = unformatted_table[:-1]  # remove space at end
-                    formatted_table = "\n\n" + formatted_table  # preprend newlines
-                    md_text = md_text.replace(unformatted_table, formatted_table)
+                            md_text += t
+                    elif 'table' in cluster[0]:
+                        formatted_table = ""
+                        header = True
+                        _table = cluster[0]['table']
+                        for row in _table:
+                            row = ["" if r is None else r for r in row]
+                            row = [s.replace("\n", " ") for s in row]
+                            formatted_table += ("| " + " | ".join(row) + " |\n")
+                            if header:
+                                formatted_table += ("| " + ("---|")*len(row)+"\n")
+                                header = False
+                        formatted_table = "\n\n" + formatted_table  # preprend newlines
+                        md_text += formatted_table
             # save to markdown file
             with open(filename + ".md", 'w') as file:
                 file.write(md_text)
